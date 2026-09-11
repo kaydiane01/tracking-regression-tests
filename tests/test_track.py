@@ -2,6 +2,7 @@ VALID_EVENT = {
     "event_id": "evt-001",
     "event_type": "purchase",
     "timestamp": "2026-09-11T12:00:00Z",
+    "consent": "granted",
 }
 
 
@@ -104,3 +105,61 @@ def test_non_json_body_is_rejected(client):
     )
 
     assert response.status_code == 422
+
+
+def test_granted_consent_is_accepted(client):
+    response = client.post("/track", json=VALID_EVENT)
+
+    assert response.status_code == 201
+
+
+def test_denied_consent_is_rejected(client):
+    event = {**VALID_EVENT, "consent": "denied"}
+
+    response = client.post("/track", json=event)
+
+    assert response.status_code == 403
+
+
+def test_missing_consent_is_rejected(client):
+    event = {k: v for k, v in VALID_EVENT.items() if k != "consent"}
+
+    response = client.post("/track", json=event)
+
+    assert response.status_code == 403
+
+
+def test_invalid_consent_value_is_rejected_as_malformed(client):
+    """A value outside "granted"/"denied" is a schema problem (422), distinct
+    from the policy rejections (403) for denied or missing consent."""
+    event = {**VALID_EVENT, "consent": "maybe"}
+
+    response = client.post("/track", json=event)
+
+    assert response.status_code == 422
+
+
+def test_denied_consent_does_not_block_a_later_granted_retry(client):
+    """An event rejected for lack of consent must not be recorded as seen,
+    so a legitimate retry with the same event_id and consent granted still
+    succeeds -- consent rejection and dedup are independent checks."""
+    denied = {**VALID_EVENT, "consent": "denied"}
+    first = client.post("/track", json=denied)
+    assert first.status_code == 403
+
+    retry = {**VALID_EVENT, "consent": "granted"}
+    second = client.post("/track", json=retry)
+
+    assert second.status_code == 201
+
+
+def test_duplicate_with_denied_consent_returns_403_not_409(client):
+    """Consent takes precedence over dedup: a resend that is both a
+    duplicate and consent-denied should not confirm via 409 that the
+    event_id was already tracked."""
+    client.post("/track", json=VALID_EVENT)
+
+    resend = {**VALID_EVENT, "consent": "denied"}
+    response = client.post("/track", json=resend)
+
+    assert response.status_code == 403
